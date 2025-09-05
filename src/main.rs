@@ -1,4 +1,4 @@
-use std::{f32::consts::TAU, sync::Arc};
+use std::{env, f32::consts::TAU, fs, sync::Arc};
 
 use cpal::{
     Device, FromSample, I24, SizedSample, StreamConfig, StreamError,
@@ -11,6 +11,8 @@ use eframe::{
         mutex::Mutex,
     },
 };
+use rfd::FileDialog;
+use serde::{Deserialize, Serialize};
 
 fn main() {
     let host = cpal::default_host();
@@ -38,7 +40,7 @@ fn main() {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Serialize, Deserialize)]
 enum Waveform {
     Sine,
     Triangle,
@@ -79,6 +81,7 @@ impl Waveform {
 }
 
 /// A linearly-interpolated curve in range 0.0..1.0
+#[derive(Serialize, Deserialize)]
 struct Curve(Vec<f32>);
 
 impl Curve {
@@ -93,6 +96,7 @@ impl Curve {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct Wave {
     waveform: Waveform,
     freq: f32,
@@ -105,13 +109,18 @@ impl Wave {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct Timbre {
+    amp: Curve,
+    waves: Vec<Wave>,
+}
+
 struct Playback {
     sample_rate: u32,
     channels: u16,
     sample: u32,
     hz: f32,
-    amp: Curve,
-    waves: Vec<Wave>,
+    timbre: Timbre,
 }
 
 #[derive(Clone)]
@@ -122,17 +131,35 @@ impl App for MyApp {
         // TODO: don't block audio thread
         let mut playback = self.0.lock();
         CentralPanel::default().show(ctx, |ui| {
-            ui_volume_curve(ui, &mut playback.amp);
             ui.add(Slider::new(&mut playback.hz, 20.0..=2000.0).text("hz"));
             if ui.button("Add wave").clicked() {
-                playback.waves.push(Wave {
+                playback.timbre.waves.push(Wave {
                     waveform: Waveform::Sine,
                     freq: 1.0,
                     amp: Curve(vec![0.5]),
                 });
             }
+            ui.add_space(25.0);
+            if ui.button("Save").clicked()
+                && let Some(path) = file_dialog().save_file()
+            {
+                fs::write(
+                    path,
+                    serde_json::to_string(&playback.timbre).expect("Could not serialize timbre"),
+                )
+                .expect("Could not write file");
+            }
+            if ui.button("Load").clicked()
+                && let Some(path) = file_dialog().pick_file()
+            {
+                playback.timbre =
+                    serde_json::from_slice(&fs::read(path).expect("Could not read file"))
+                        .expect("Could not deserialize file");
+            }
+            ui.add_space(25.0);
+            ui_volume_curve(ui, &mut playback.timbre.amp);
             ScrollArea::vertical().show(ui, |ui| {
-                playback.waves.retain_mut(|wave| {
+                playback.timbre.waves.retain_mut(|wave| {
                     ui.add_space(25.0);
 
                     ui_volume_curve(ui, &mut wave.amp);
@@ -163,6 +190,12 @@ impl App for MyApp {
     }
 }
 
+fn file_dialog() -> FileDialog {
+    FileDialog::new()
+        .set_directory(env::current_dir().expect("Could not get current dir"))
+        .add_filter("JSON", &["json"])
+}
+
 fn ui_volume_curve(ui: &mut Ui, curve: &mut Curve) {
     ui.horizontal(|ui| {
         ui.label("Volume curve");
@@ -184,8 +217,10 @@ fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &Str
         sample_rate: config.sample_rate.0,
         channels: config.channels,
         hz: 440.0,
-        amp: Curve(vec![0.5]),
-        waves: vec![],
+        timbre: Timbre {
+            amp: Curve(vec![0.5]),
+            waves: vec![],
+        },
     })));
     let clone = app.clone();
     let stream = device
@@ -211,11 +246,12 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
     for frame in data.chunks_mut(playback.channels as usize) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
         let value = playback
+            .timbre
             .waves
             .iter()
             .map(|wave| wave.at(sec, playback.hz))
             .sum::<f32>()
-            * playback.amp.at(sec);
+            * playback.timbre.amp.at(sec);
         let value = T::from_sample(value);
         playback.sample = (playback.sample + 1) % playback.sample_rate;
         for sample in frame {

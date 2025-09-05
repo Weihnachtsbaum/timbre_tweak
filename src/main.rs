@@ -44,6 +44,7 @@ enum Waveform {
     Triangle,
     Sawtooth,
     Square,
+    WhiteNoise,
 }
 
 impl Waveform {
@@ -64,6 +65,14 @@ impl Waveform {
                 } else {
                     1.0
                 }
+            }
+            Self::WhiteNoise => {
+                let mut n = t.to_bits();
+                // fmix32 (MurmurHash3)
+                n = (n ^ n >> 16).wrapping_mul(0x85EBCA6B);
+                n = (n ^ n >> 13).wrapping_mul(0xC2B2AE35);
+                n ^= n >> 16;
+                n as f32 / i32::MAX as f32 - 1.0
             }
         }
     }
@@ -140,6 +149,11 @@ impl App for MyApp {
                             ui.selectable_value(&mut wave.waveform, Waveform::Triangle, "Triangle");
                             ui.selectable_value(&mut wave.waveform, Waveform::Sawtooth, "Sawtooth");
                             ui.selectable_value(&mut wave.waveform, Waveform::Square, "Square");
+                            ui.selectable_value(
+                                &mut wave.waveform,
+                                Waveform::WhiteNoise,
+                                "White noise",
+                            );
                         });
 
                     !ui.button("Remove wave").clicked()

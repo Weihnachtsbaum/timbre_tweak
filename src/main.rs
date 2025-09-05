@@ -6,7 +6,7 @@ use cpal::{
 };
 use eframe::{
     App, NativeOptions,
-    egui::{CentralPanel, Context, Slider, mutex::Mutex},
+    egui::{CentralPanel, Context, Popup, PopupCloseBehavior, Slider, mutex::Mutex},
 };
 
 fn main() {
@@ -35,10 +35,42 @@ fn main() {
     }
 }
 
+#[derive(PartialEq)]
+enum Waveform {
+    Sine,
+    Triangle,
+    Sawtooth,
+    Square,
+}
+
+impl Waveform {
+    fn at(&self, t: f32) -> f32 {
+        match *self {
+            Self::Sine => (t * TAU).sin(),
+            Self::Triangle => {
+                if t.fract() < 0.5 {
+                    t.fract() * 4.0 - 1.0
+                } else {
+                    3.0 - t.fract() * 4.0
+                }
+            }
+            Self::Sawtooth => t.fract() * 2.0 - 1.0,
+            Self::Square => {
+                if t.fract() < 0.5 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
+        }
+    }
+}
+
 struct Playback {
     sample_rate: u32,
     channels: u16,
     hz: f32,
+    waveform: Waveform,
     sample: u32,
 }
 
@@ -48,8 +80,19 @@ struct MyApp(Arc<Mutex<Playback>>);
 impl App for MyApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // TODO: don't block audio thread
+        let mut playback = self.0.lock();
         CentralPanel::default().show(ctx, |ui| {
-            ui.add(Slider::new(&mut self.0.lock().hz, 20.0..=2000.0).text("hz"));
+            ui.add(Slider::new(&mut playback.hz, 20.0..=2000.0).text("hz"));
+
+            let response = ui.button("Waveform");
+            Popup::menu(&response)
+                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.selectable_value(&mut playback.waveform, Waveform::Sine, "Sine");
+                    ui.selectable_value(&mut playback.waveform, Waveform::Triangle, "Triangle");
+                    ui.selectable_value(&mut playback.waveform, Waveform::Sawtooth, "Sawtooth");
+                    ui.selectable_value(&mut playback.waveform, Waveform::Square, "Square");
+                });
         });
     }
 }
@@ -60,6 +103,7 @@ fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &Str
         sample_rate: config.sample_rate.0,
         channels: config.channels,
         hz: 440.0,
+        waveform: Waveform::Sine,
     })));
     let clone = app.clone();
     let stream = device
@@ -84,7 +128,7 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
     let mut playback = app.0.lock();
     for frame in data.chunks_mut(playback.channels as usize) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
-        let value = T::from_sample((sec * playback.hz * TAU).sin());
+        let value = T::from_sample(playback.waveform.at(sec * playback.hz));
         playback.sample += 1;
         for sample in frame {
             *sample = value;

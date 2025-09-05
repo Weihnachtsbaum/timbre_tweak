@@ -71,6 +71,7 @@ struct Playback {
     channels: u16,
     hz: f32,
     waveform: Waveform,
+    amp: f32,
     sample: u32,
 }
 
@@ -82,6 +83,7 @@ impl App for MyApp {
         // TODO: don't block audio thread
         let mut playback = self.0.lock();
         CentralPanel::default().show(ctx, |ui| {
+            ui.add(Slider::new(&mut playback.amp, 0.0..=1.0).text("volume"));
             ui.add(Slider::new(&mut playback.hz, 20.0..=2000.0).text("hz"));
 
             let response = ui.button("Waveform");
@@ -104,6 +106,7 @@ fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &Str
         channels: config.channels,
         hz: 440.0,
         waveform: Waveform::Sine,
+        amp: 0.5,
     })));
     let clone = app.clone();
     let stream = device
@@ -128,7 +131,7 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
     let mut playback = app.0.lock();
     for frame in data.chunks_mut(playback.channels as usize) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
-        let value = T::from_sample(playback.waveform.at(sec * playback.hz));
+        let value = T::from_sample(playback.waveform.at(sec * playback.hz) * playback.amp);
         playback.sample += 1;
         for sample in frame {
             *sample = value;

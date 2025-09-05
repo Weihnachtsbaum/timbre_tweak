@@ -6,7 +6,7 @@ use cpal::{
 };
 use eframe::{
     App, NativeOptions,
-    egui::{CentralPanel, Context, Popup, PopupCloseBehavior, Slider, mutex::Mutex},
+    egui::{CentralPanel, Context, Popup, PopupCloseBehavior, ScrollArea, Slider, mutex::Mutex},
 };
 
 fn main() {
@@ -66,13 +66,23 @@ impl Waveform {
     }
 }
 
+struct Wave {
+    waveform: Waveform,
+    hz: f32,
+    amp: f32,
+}
+
+impl Wave {
+    fn at(&self, sec: f32) -> f32 {
+        self.waveform.at(sec * self.hz) * self.amp
+    }
+}
+
 struct Playback {
     sample_rate: u32,
     channels: u16,
-    hz: f32,
-    waveform: Waveform,
-    amp: f32,
     sample: u32,
+    waves: Vec<Wave>,
 }
 
 #[derive(Clone)]
@@ -83,18 +93,32 @@ impl App for MyApp {
         // TODO: don't block audio thread
         let mut playback = self.0.lock();
         CentralPanel::default().show(ctx, |ui| {
-            ui.add(Slider::new(&mut playback.amp, 0.0..=1.0).text("volume"));
-            ui.add(Slider::new(&mut playback.hz, 20.0..=2000.0).text("hz"));
-
-            let response = ui.button("Waveform");
-            Popup::menu(&response)
-                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    ui.selectable_value(&mut playback.waveform, Waveform::Sine, "Sine");
-                    ui.selectable_value(&mut playback.waveform, Waveform::Triangle, "Triangle");
-                    ui.selectable_value(&mut playback.waveform, Waveform::Sawtooth, "Sawtooth");
-                    ui.selectable_value(&mut playback.waveform, Waveform::Square, "Square");
+            if ui.button("Add wave").clicked() {
+                playback.waves.push(Wave {
+                    waveform: Waveform::Sine,
+                    hz: 440.0,
+                    amp: 0.5,
                 });
+            }
+            ScrollArea::vertical().show(ui, |ui| {
+                playback.waves.retain_mut(|wave| {
+                    ui.add_space(25.0);
+                    ui.add(Slider::new(&mut wave.amp, 0.0..=1.0).text("volume"));
+                    ui.add(Slider::new(&mut wave.hz, 20.0..=2000.0).text("hz"));
+
+                    let response = ui.button("Waveform");
+                    Popup::menu(&response)
+                        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.selectable_value(&mut wave.waveform, Waveform::Sine, "Sine");
+                            ui.selectable_value(&mut wave.waveform, Waveform::Triangle, "Triangle");
+                            ui.selectable_value(&mut wave.waveform, Waveform::Sawtooth, "Sawtooth");
+                            ui.selectable_value(&mut wave.waveform, Waveform::Square, "Square");
+                        });
+
+                    !ui.button("Remove wave").clicked()
+                });
+            });
         });
     }
 }
@@ -104,9 +128,7 @@ fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &Str
         sample: 0,
         sample_rate: config.sample_rate.0,
         channels: config.channels,
-        hz: 440.0,
-        waveform: Waveform::Sine,
-        amp: 0.5,
+        waves: vec![],
     })));
     let clone = app.clone();
     let stream = device
@@ -131,7 +153,8 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
     let mut playback = app.0.lock();
     for frame in data.chunks_mut(playback.channels as usize) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
-        let value = T::from_sample(playback.waveform.at(sec * playback.hz) * playback.amp);
+        let value = playback.waves.iter().map(|wave| wave.at(sec)).sum();
+        let value = T::from_sample(value);
         playback.sample += 1;
         for sample in frame {
             *sample = value;

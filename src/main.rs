@@ -1,8 +1,12 @@
-use std::{f32::consts::TAU, thread, time::Duration};
+use std::{f32::consts::TAU, sync::Arc};
 
 use cpal::{
     Device, FromSample, I24, SizedSample, StreamConfig, StreamError,
     traits::{DeviceTrait, HostTrait, StreamTrait},
+};
+use eframe::{
+    App, NativeOptions,
+    egui::{CentralPanel, Context, Slider, mutex::Mutex},
 };
 
 fn main() {
@@ -38,26 +42,46 @@ struct Playback {
     sample: u32,
 }
 
+#[derive(Clone)]
+struct MyApp(Arc<Mutex<Playback>>);
+
+impl App for MyApp {
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // TODO: don't block audio thread
+        CentralPanel::default().show(ctx, |ui| {
+            ui.add(Slider::new(&mut self.0.lock().hz, 20.0..=2000.0).text("hz"));
+        });
+    }
+}
+
 fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &StreamConfig) {
-    let mut playback = Playback {
+    let app = MyApp(Arc::new(Mutex::new(Playback {
         sample: 0,
         sample_rate: config.sample_rate.0,
         channels: config.channels,
         hz: 440.0,
-    };
+    })));
+    let clone = app.clone();
     let stream = device
         .build_output_stream(
             config,
-            move |data, _| write_data::<T>(data, &mut playback),
+            move |data, _| write_data::<T>(data, &clone),
             err,
             None,
         )
         .expect("Could not build output stream");
     stream.play().expect("Could not play stream");
-    thread::sleep(Duration::from_secs(5));
+
+    eframe::run_native(
+        "Timbre Tweak",
+        NativeOptions::default(),
+        Box::new(|_| Ok(Box::new(app))),
+    )
+    .expect("Error running eframe App");
 }
 
-fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], playback: &mut Playback) {
+fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
+    let mut playback = app.0.lock();
     for frame in data.chunks_mut(playback.channels as usize) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
         let value = T::from_sample((sec * playback.hz * TAU).sin());

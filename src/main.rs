@@ -6,7 +6,10 @@ use cpal::{
 };
 use eframe::{
     App, NativeOptions,
-    egui::{CentralPanel, Context, Popup, PopupCloseBehavior, ScrollArea, Slider, mutex::Mutex},
+    egui::{
+        CentralPanel, Context, DragValue, Popup, PopupCloseBehavior, ScrollArea, Slider,
+        mutex::Mutex,
+    },
 };
 
 fn main() {
@@ -66,15 +69,30 @@ impl Waveform {
     }
 }
 
+/// A linearly-interpolated curve in range 0.0..1.0
+struct Curve(Vec<f32>);
+
+impl Curve {
+    fn at(&self, t: f32) -> f32 {
+        let i = t * (self.0.len() - 1) as f32;
+        let (fract, i) = (i.fract(), i as usize);
+        if i == self.0.len() - 1 {
+            self.0[i]
+        } else {
+            (1.0 - fract) * self.0[i] + fract * self.0[i + 1]
+        }
+    }
+}
+
 struct Wave {
     waveform: Waveform,
     hz: f32,
-    amp: f32,
+    amp: Curve,
 }
 
 impl Wave {
     fn at(&self, sec: f32) -> f32 {
-        self.waveform.at(sec * self.hz) * self.amp
+        self.waveform.at(sec * self.hz) * self.amp.at(sec)
     }
 }
 
@@ -97,13 +115,25 @@ impl App for MyApp {
                 playback.waves.push(Wave {
                     waveform: Waveform::Sine,
                     hz: 440.0,
-                    amp: 0.5,
+                    amp: Curve(vec![0.5]),
                 });
             }
             ScrollArea::vertical().show(ui, |ui| {
                 playback.waves.retain_mut(|wave| {
                     ui.add_space(25.0);
-                    ui.add(Slider::new(&mut wave.amp, 0.0..=1.0).text("volume"));
+
+                    ui.label("Volume curve");
+                    ui.horizontal(|ui| {
+                        if ui.button("+").clicked() {
+                            wave.amp.0.push(0.0);
+                        }
+                        if ui.button("-").clicked() && wave.amp.0.len() > 1 {
+                            wave.amp.0.pop();
+                        }
+                        for v in wave.amp.0.iter_mut() {
+                            ui.add(DragValue::new(v).range(0.0..=1.0).speed(0.01));
+                        }
+                    });
                     ui.add(Slider::new(&mut wave.hz, 20.0..=2000.0).text("hz"));
 
                     let response = ui.button("Waveform");
@@ -155,7 +185,7 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
         let sec = playback.sample as f32 / playback.sample_rate as f32;
         let value = playback.waves.iter().map(|wave| wave.at(sec)).sum();
         let value = T::from_sample(value);
-        playback.sample += 1;
+        playback.sample = (playback.sample + 1) % playback.sample_rate;
         for sample in frame {
             *sample = value;
         }

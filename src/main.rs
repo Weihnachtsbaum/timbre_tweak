@@ -158,34 +158,18 @@ impl App for MyApp {
             }
             ui.add_space(25.0);
             ui_volume_curve(ui, &mut playback.timbre.amp);
+            let mut i = 0;
+            let len = playback.timbre.waves.len();
+            let mut swap = vec![];
             ScrollArea::vertical().show(ui, |ui| {
-                playback.timbre.waves.retain_mut(|wave| {
-                    ui.add_space(25.0);
-
-                    ui_volume_curve(ui, &mut wave.amp);
-                    ui.horizontal(|ui| {
-                        ui.label("Relative frequency");
-                        ui.add(DragValue::new(&mut wave.freq).speed(0.01));
-                    });
-
-                    let response = ui.button("Waveform");
-                    Popup::menu(&response)
-                        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-                        .show(|ui| {
-                            ui.selectable_value(&mut wave.waveform, Waveform::Sine, "Sine");
-                            ui.selectable_value(&mut wave.waveform, Waveform::Triangle, "Triangle");
-                            ui.selectable_value(&mut wave.waveform, Waveform::Sawtooth, "Sawtooth");
-                            ui.selectable_value(&mut wave.waveform, Waveform::Square, "Square");
-                            ui.selectable_value(
-                                &mut wave.waveform,
-                                Waveform::WhiteNoise,
-                                "White noise",
-                            );
-                        });
-
-                    !ui.button("Remove wave").clicked()
-                });
+                playback
+                    .timbre
+                    .waves
+                    .retain_mut(|wave| wave_ui(wave, &mut i, len, &mut swap, ui));
             });
+            for (i1, i2) in swap {
+                playback.timbre.waves.swap(i1, i2);
+            }
         });
     }
 }
@@ -209,6 +193,54 @@ fn ui_volume_curve(ui: &mut Ui, curve: &mut Curve) {
             ui.add(DragValue::new(v).range(0.0..=1.0).speed(0.01));
         }
     });
+}
+
+fn wave_ui(
+    wave: &mut Wave,
+    i: &mut usize,
+    len: usize,
+    swap: &mut Vec<(usize, usize)>,
+    ui: &mut Ui,
+) -> bool {
+    ui.add_space(25.0);
+
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            if ui.button("^").clicked() && *i != 0 {
+                swap.push((*i, *i - 1));
+            }
+            if ui.button("v").clicked() && *i != len - 1 {
+                swap.push((*i, *i + 1));
+            }
+        });
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui_volume_curve(ui, &mut wave.amp);
+            ui.horizontal(|ui| {
+                ui.label("Relative frequency");
+                ui.add(DragValue::new(&mut wave.freq).speed(0.01));
+            });
+
+            let response = ui.button("Waveform");
+            Popup::menu(&response)
+                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.selectable_value(&mut wave.waveform, Waveform::Sine, "Sine");
+                    ui.selectable_value(&mut wave.waveform, Waveform::Triangle, "Triangle");
+                    ui.selectable_value(&mut wave.waveform, Waveform::Sawtooth, "Sawtooth");
+                    ui.selectable_value(&mut wave.waveform, Waveform::Square, "Square");
+                    ui.selectable_value(&mut wave.waveform, Waveform::WhiteNoise, "White noise");
+                });
+
+            let retain = !ui.button("Remove wave").clicked();
+            if retain {
+                *i += 1;
+            }
+            retain
+        })
+    })
+    .inner
+    .inner
 }
 
 fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &StreamConfig) {

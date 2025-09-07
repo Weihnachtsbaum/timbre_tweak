@@ -140,21 +140,24 @@ impl App for MyApp {
                 });
             }
             ui.add_space(25.0);
-            if ui.button("Save").clicked()
-                && let Some(path) = file_dialog().save_file()
-            {
-                fs::write(
-                    path,
-                    serde_json::to_string(&playback.timbre).expect("Could not serialize timbre"),
-                )
-                .expect("Could not write file");
+            if ui.button("Save").clicked() {
+                if let Some(path) = file_dialog().save_file()
+                    && let Ok(str) = serde_json::to_string(&playback.timbre)
+                    && let Ok(()) = fs::write(path, str)
+                {
+                } else {
+                    eprintln!("File save failed");
+                }
             }
-            if ui.button("Load").clicked()
-                && let Some(path) = file_dialog().pick_file()
-            {
-                playback.timbre =
-                    serde_json::from_slice(&fs::read(path).expect("Could not read file"))
-                        .expect("Could not deserialize file");
+            if ui.button("Load").clicked() {
+                if let Some(path) = file_dialog().pick_file()
+                    && let Ok(slice) = fs::read(path)
+                    && let Ok(timbre) = serde_json::from_slice(&slice)
+                {
+                    playback.timbre = timbre;
+                } else {
+                    eprintln!("File load failed");
+                }
             }
             ui.add_space(25.0);
             ui_curve(ui, &mut playback.timbre.amp, "Global volume");

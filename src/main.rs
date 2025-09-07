@@ -1,7 +1,7 @@
-use std::{env, f32::consts::TAU, fs, sync::Arc};
+use std::{env, f32::consts::TAU, fs, sync::Arc, thread};
 
 use cpal::{
-    Device, FromSample, I24, SizedSample, StreamConfig, StreamError,
+    Device, FromSample, I24, SizedSample, Stream, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use eframe::{
@@ -15,29 +15,23 @@ use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 
 fn main() {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .expect("No output device available");
-    let default_config = device
-        .default_output_config()
-        .expect("Could not get default output config");
-    println!("{default_config:?}");
-    let config = default_config.config();
-    match default_config.sample_format() {
-        cpal::SampleFormat::I8 => run::<i8>(&device, &config),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config),
-        cpal::SampleFormat::I24 => run::<I24>(&device, &config),
-        cpal::SampleFormat::I32 => run::<i32>(&device, &config),
-        cpal::SampleFormat::I64 => run::<i64>(&device, &config),
-        cpal::SampleFormat::U8 => run::<u8>(&device, &config),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config),
-        cpal::SampleFormat::U32 => run::<u32>(&device, &config),
-        cpal::SampleFormat::U64 => run::<u64>(&device, &config),
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config),
-        cpal::SampleFormat::F64 => run::<f64>(&device, &config),
-        sample_format => panic!("Unsupported sample format '{sample_format}'"),
-    }
+    let app = MyApp(Arc::new(Mutex::new(Playback {
+        stream_config: None,
+        stream: None,
+        sample: 0,
+        hz: 440.0,
+        timbre: Timbre {
+            amp: Curve(vec![0.5]),
+            waves: vec![],
+        },
+    })));
+    setup_audio(app.clone());
+    eframe::run_native(
+        "Timbre Tweak",
+        NativeOptions::default(),
+        Box::new(|_| Ok(Box::new(app))),
+    )
+    .expect("Error running eframe App");
 }
 
 #[derive(PartialEq, Serialize, Deserialize)]
@@ -116,8 +110,8 @@ struct Timbre {
 }
 
 struct Playback {
-    sample_rate: u32,
-    channels: u16,
+    stream_config: Option<StreamConfig>,
+    stream: Option<Stream>,
     sample: u32,
     hz: f32,
     timbre: Timbre,
@@ -243,40 +237,65 @@ fn wave_ui(
     .inner
 }
 
-fn run<T: SizedSample + FromSample<f32> + 'static>(device: &Device, config: &StreamConfig) {
-    let app = MyApp(Arc::new(Mutex::new(Playback {
-        sample: 0,
-        sample_rate: config.sample_rate.0,
-        channels: config.channels,
-        hz: 440.0,
-        timbre: Timbre {
-            amp: Curve(vec![0.5]),
-            waves: vec![],
-        },
-    })));
-    let clone = app.clone();
+fn setup_audio(app: MyApp) {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .expect("No output device available");
+    let default_config = device
+        .default_output_config()
+        .expect("Could not get default output config");
+    println!("{default_config:?}");
+    let config = default_config.config();
+    match default_config.sample_format() {
+        cpal::SampleFormat::I8 => setup_stream::<i8>(device, config, app),
+        cpal::SampleFormat::I16 => setup_stream::<i16>(device, config, app),
+        cpal::SampleFormat::I24 => setup_stream::<I24>(device, config, app),
+        cpal::SampleFormat::I32 => setup_stream::<i32>(device, config, app),
+        cpal::SampleFormat::I64 => setup_stream::<i64>(device, config, app),
+        cpal::SampleFormat::U8 => setup_stream::<u8>(device, config, app),
+        cpal::SampleFormat::U16 => setup_stream::<u16>(device, config, app),
+        cpal::SampleFormat::U32 => setup_stream::<u32>(device, config, app),
+        cpal::SampleFormat::U64 => setup_stream::<u64>(device, config, app),
+        cpal::SampleFormat::F32 => setup_stream::<f32>(device, config, app),
+        cpal::SampleFormat::F64 => setup_stream::<f64>(device, config, app),
+        sample_format => panic!("Unsupported sample format '{sample_format}'"),
+    }
+}
+
+fn setup_stream<T: SizedSample + FromSample<f32> + 'static>(
+    device: Device,
+    config: StreamConfig,
+    app: MyApp,
+) {
+    let app1 = app.clone();
+    let app2 = app.clone();
     let stream = device
         .build_output_stream(
-            config,
-            move |data, _| write_data::<T>(data, &clone),
-            err,
+            &config,
+            move |data, _| write_data::<T>(data, app1.clone()),
+            move |err| {
+                eprintln!("Error: {err}\nRetrying...");
+                let app = app2.clone();
+                thread::spawn(move || setup_audio(app));
+            },
             None,
         )
         .expect("Could not build output stream");
     stream.play().expect("Could not play stream");
-
-    eframe::run_native(
-        "Timbre Tweak",
-        NativeOptions::default(),
-        Box::new(|_| Ok(Box::new(app))),
-    )
-    .expect("Error running eframe App");
+    let mut lock = app.0.lock();
+    lock.stream_config = Some(config.clone());
+    lock.stream = Some(stream);
 }
 
-fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
+fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: MyApp) {
     let mut playback = app.0.lock();
-    for frame in data.chunks_mut(playback.channels as usize) {
-        let sec = playback.sample as f32 / playback.sample_rate as f32;
+    let Some(stream_config) = playback.stream_config.clone() else {
+        eprintln!("Error: No stream config");
+        return;
+    };
+    for frame in data.chunks_mut(stream_config.channels as usize) {
+        let sec = playback.sample as f32 / stream_config.sample_rate.0 as f32;
         let value = playback
             .timbre
             .waves
@@ -285,13 +304,9 @@ fn write_data<T: SizedSample + FromSample<f32>>(data: &mut [T], app: &MyApp) {
             .sum::<f32>()
             * playback.timbre.amp.at(sec);
         let value = T::from_sample(value);
-        playback.sample = (playback.sample + 1) % playback.sample_rate;
+        playback.sample = (playback.sample + 1) % stream_config.sample_rate.0;
         for sample in frame {
             *sample = value;
         }
     }
-}
-
-fn err(err: StreamError) {
-    eprintln!("Error: {err}");
 }

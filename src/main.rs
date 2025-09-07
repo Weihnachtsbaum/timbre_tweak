@@ -99,13 +99,13 @@ impl Curve {
 #[derive(Serialize, Deserialize)]
 struct Wave {
     waveform: Waveform,
-    freq: f32,
+    freq: Curve,
     amp: Curve,
 }
 
 impl Wave {
     fn at(&self, sec: f32, hz: f32) -> f32 {
-        self.waveform.at(sec * hz * self.freq) * self.amp.at(sec)
+        self.waveform.at(sec * hz * self.freq.at(sec)) * self.amp.at(sec)
     }
 }
 
@@ -135,7 +135,7 @@ impl App for MyApp {
             if ui.button("Add wave").clicked() {
                 playback.timbre.waves.push(Wave {
                     waveform: Waveform::Sine,
-                    freq: 1.0,
+                    freq: Curve(vec![1.0]),
                     amp: Curve(vec![0.5]),
                 });
             }
@@ -157,7 +157,7 @@ impl App for MyApp {
                         .expect("Could not deserialize file");
             }
             ui.add_space(25.0);
-            ui_volume_curve(ui, &mut playback.timbre.amp);
+            ui_curve(ui, &mut playback.timbre.amp, "Global volume");
             let mut i = 0;
             let len = playback.timbre.waves.len();
             let mut swap = vec![];
@@ -180,17 +180,17 @@ fn file_dialog() -> FileDialog {
         .add_filter("JSON", &["json"])
 }
 
-fn ui_volume_curve(ui: &mut Ui, curve: &mut Curve) {
+fn ui_curve(ui: &mut Ui, curve: &mut Curve, label: &str) {
     ui.horizontal(|ui| {
-        ui.label("Volume curve");
+        ui.label(label);
         if ui.button("+").clicked() {
-            curve.0.push(0.0);
+            curve.0.push(*curve.0.last().unwrap());
         }
         if ui.button("-").clicked() && curve.0.len() > 1 {
             curve.0.pop();
         }
         for v in curve.0.iter_mut() {
-            ui.add(DragValue::new(v).range(0.0..=1.0).speed(0.01));
+            ui.add(DragValue::new(v).range(0.0..=f32::INFINITY).speed(0.01));
         }
     });
 }
@@ -215,11 +215,8 @@ fn wave_ui(
         });
         ui.add_space(10.0);
         ui.vertical(|ui| {
-            ui_volume_curve(ui, &mut wave.amp);
-            ui.horizontal(|ui| {
-                ui.label("Relative frequency");
-                ui.add(DragValue::new(&mut wave.freq).speed(0.01));
-            });
+            ui_curve(ui, &mut wave.amp, "Volume");
+            ui_curve(ui, &mut wave.freq, "Relative frequency");
 
             let response = ui.button("Waveform");
             Popup::menu(&response)
